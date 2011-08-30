@@ -1,0 +1,217 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Class::MOP;
+use File::Spec::Functions qw(catfile);   
+
+use Config::Settings;
+use Hash::Merge qw(merge);
+
+my $name = shift;
+unless (defined($name)) {
+  die "Usage: $0 <profilename>\n";
+}
+
+# load the config file
+my $config = Config::Settings->new->parse_file( catfile( $ENV{HOME}, ".watchremote.conf") ); 
+unless ($config) { die "boom?" }
+
+# work out what the servers should be
+my %options = %$config;
+my $servers = delete $options{server};
+
+# work out what class we should be using
+my $class = delete($options{class}) || "Net::SSH::RemoteWatch";
+Class::MOP::load_class($class);
+
+# check that config exists, and if it does, merge it in
+unless (defined $servers->{ $name }) {
+  die "Config not provided for '$name' in ~/.watchremote.conf";
+}
+
+# merge the default command line options with the server ones
+%options = %{ merge(\%options, $servers->{ $name }) };
+
+# print out what options we're using if we're verbose
+use Data::Dumper;
+print STDERR Data::Dumper->Dump([ \%options ],["options"]) if $options{verbose};
+
+# and watch
+$class->new(%options)->watch;
+
+=head1 NAME
+
+  watchremote - watch a remote server over ssh for edit commands
+
+=head1 SYNOPSIS
+
+  In ~/.watchremote on your local machine
+  
+  commands {
+    file ["mate"];
+    dir  ["open"];
+  };
+
+  server "dev" {
+    ssh_command_line_options ["mydevbox.example.com"];
+    path_to_mount "/Volumes/mydevbox";
+  };
+  
+  #### on your local machine ####
+  
+  shell$ watchremote dev
+  
+  #### on your remote machine ####
+  
+  shell$ ec work/some_file.txt
+
+
+=head1 DESCRIPTION
+
+The idea behind this utility is that you want to ssh onto a remote
+server and run a command on that remote server to open a document in
+your local GUI editor on your local box.
+
+This utility assumes that you've got the remote box mounted locally
+somehow (over NFS, SAMBA, SSHFS, etc.)  It B<does not> mount this path
+for you.  You need to work out how to do that yourself.
+
+=head1 Settings
+
+In order to use this utility you need configure it for each server in
+the C<.watchremote> config file in your home directory.
+
+This format is essentially "bind" format - it's processed with the
+Config::Settings module from CPAN.
+
+=head2 Setting up Servers
+
+A server block is defined in the following format:
+
+  server "name" {
+     ssh_command_line_arguments ["ubuntu@example.com", "-p","2000"];
+     path_to_mount "/Volumes/whatever";
+  };
+
+This takes two manditory parameters.
+
+=over
+
+=item ssh_command_line_arguments
+
+List of arguments (normally including the hostname) that you
+pass to the ssh command to connect to the remote server.  Please note
+that there is no way to pass a password here;  You should use
+a ssh key.
+
+=item path_to_mount
+
+The path to where the remote file system is mounted on your
+local file system.  For example, if "/etc/passwd" on the remote
+machine was found at "/Volumes/server.example.com/etc/passwd" on
+your local machine then this should be set to
+"/Volumes/server.example.com".
+
+=back
+
+A server block can have any of the other settings (described below) overridden
+on a per server basis.  This means you can do things like have custom commands
+for certain servers
+
+=head2 Setting up Commands
+
+You probably want to set up commands by setting up a "commands" block
+
+  commands {
+     file ["vim"];
+     dir ["open"];
+     view ["open","-a","Preview"];
+  };
+
+Each command should be an array of command and command line arguments that
+will expect the path to the file/directory to be acted on as the next arguement
+
+=over
+
+=item file
+
+Used whenever editing an existing file on disk.
+
+=item dir
+
+Used whenever editing a directory on disk
+
+=item newfile
+
+Used whenever editing a file that doesn't yet exist
+
+=back
+
+There's automatic fallback;  If you don't specify as C<dir> or C<newfile>
+option they'll just use the C<file> command, and if you don't specify a
+C<file> command then it'll attempt to use a script called C<open> on
+your system (which with DTRT on Mac OS X at least.)
+
+You can also add custom commands.  For example, to copy something to
+your local machine you might do
+
+  ec -c copy myfile.txt
+
+Having first set up a command
+
+   commands {
+    file ["mate"];
+    dir  ["open"];
+    copy ["cp","/tmp"];
+  };
+
+You can setup additional command blocks inside server blocks to define
+more or override existing commands on a per-server basis (For example, maybe
+you want something like "copy" to copy files to a different place for each
+server)
+
+=head2 Optional Settings
+
+These settings can be set either on a global basis or inside each server
+block (or both, with the per-server settings overriding the global setting)
+
+=over
+
+=item mount_relative_to
+
+Defines what path on the remote file system is mounted on the
+local mount point.
+
+For example if your home directory on the local machine is "/home/mark"
+and this is mounted locally as "/Volumes/server.example.com" then
+C<mount_relative_to> should be set to "/home/mark".
+
+By default this is set to "/", i.e. you are mounting the root directory
+on the remote machine on the local mount point.
+
+=item editor_command_name
+
+The name of the editor command script that you want to install
+on the remote server.  This defaults to C<ec> (for "editor command",
+but also for everyone who is used to typing "ec" for emacs client)
+
+=item custom_temp_dir
+
+Custom directory on the remote machine that can be accessed across
+the mount point.  Useful if your normal system temp directory is not
+accessible via the mount point.
+
+  custom_temp_dir "/home/mark/tmp";
+
+The directory must exist
+
+=item verbose
+
+Including this option enables verbose printing of every command
+sent by the remote server.
+
+=back
+
+=cut
